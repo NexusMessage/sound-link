@@ -231,27 +231,52 @@ export function encode(data, nsym, blockData = 64) {
   return { bytes: Uint8Array.from(out), blocks: blocks.length, lengths: blocks.map((b) => b.length) };
 }
 
-export function decode(bytes, nsym, lengths, suspect = null) {
+/**
+ * @param reliability optional per-byte confidence from the demodulator, in the
+ *   same order as `bytes`. Where it is present, the decoder flags its least
+ *   trustworthy bytes as erasures — each worth twice as much as a blind
+ *   correction — and retries with several amounts of flagging, because how far
+ *   to trust the confidence depends on the channel and cannot be fixed in
+ *   advance.
+ */
+export function decode(bytes, nsym, lengths, reliability = null) {
   const blocks = lengths.map((len) => new Uint8Array(len));
-  const erasures = lengths.map(() => []);
+  const conf = lengths.map((len) => (reliability ? new Float64Array(len) : null));
   const maxLen = Math.max(...lengths);
   let c = 0;
   for (let i = 0; i < maxLen; i++) {
     for (let b = 0; b < blocks.length; b++) {
       if (i < lengths[b]) {
         blocks[b][i] = bytes[c];
-        // De-interleaving carries the reliability flags along with the bytes.
-        if (suspect && suspect[c]) erasures[b].push(i);
+        // De-interleaving carries the confidence along with the bytes.
+        if (reliability) conf[b][i] = reliability[c];
         c++;
       }
     }
   }
+
   const out = [];
   let repaired = 0;
   for (let bi = 0; bi < blocks.length; bi++) {
     const b = blocks[bi];
-    const fixed = decodeBlock(b, nsym, erasures[bi]);
+
+    let ranked = null;
+    if (conf[bi]) {
+      ranked = Array.from(conf[bi].keys()).sort((x, y) => conf[bi][x] - conf[bi][y]);
+    }
+    // Every flagged byte spends one parity byte and every unflagged error
+    // spends two, so the ladder walks from trusting the confidence heavily
+    // down to ignoring it entirely.
+    const ladder = ranked ? [Math.floor(nsym * 0.75), Math.floor(nsym * 0.5), Math.floor(nsym * 0.25), 0] : [0];
+
+    let fixed = null;
+    for (const count of ladder) {
+      const erase = count > 0 ? ranked.slice(0, Math.min(count, b.length)) : [];
+      fixed = decodeBlock(b, nsym, erase);
+      if (fixed) break;
+    }
     if (!fixed) return null;
+
     let diff = 0;
     for (let i = 0; i < b.length; i++) if (b[i] !== fixed[i]) diff++;
     repaired += diff;

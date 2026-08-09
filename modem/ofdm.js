@@ -46,11 +46,10 @@ export class Modem {
     // Off by default: flagging weak carriers costs one parity byte per flagged
     // byte, and measurement says that trade only pays once the flags are more
     // selective than a flat quantile can be.
-    this.useErasures = opts.useErasures === true;
-    // Share of carriers whose bits get flagged as unreliable. Every flagged
-    // byte spends one parity byte, so this trades repair capacity for the
-    // knowledge of where the damage sits.
-    this.weakFraction = opts.weakFraction === undefined ? 0.1 : opts.weakFraction;
+    // On by default now that the flagging is ranked by measured confidence and
+    // retried at several depths, rather than blindly flagging a fixed share of
+    // carriers — that earlier version spent parity it did not earn back.
+    this.useErasures = opts.useErasures !== false;
     this.chirpMs = opts.chirpMs === undefined ? 150 : opts.chirpMs;
     // Silence between the sync sweep and the first symbol. It has to outlast
     // the sweep's own reverberation, or the room's memory of the chirp
@@ -173,6 +172,16 @@ export class Modem {
       im[i] = levels[(bits[o + 2] << 1) | bits[o + 3]] * norm;
     }
     return count * 4;
+  }
+
+  /** Distance from the received point to the nearest decision boundary. */
+  #decisionMargin(re, im) {
+    if (this.bitsPerCarrier === 1) return Math.abs(re);
+    if (this.bitsPerCarrier === 2) return Math.min(Math.abs(re), Math.abs(im));
+    // 16-QAM decides on three lines per axis: at zero and at ±2/√10.
+    const edge = 2 / Math.sqrt(10);
+    const axis = (v) => Math.min(Math.abs(v), Math.abs(Math.abs(v) - edge));
+    return Math.min(axis(re), axis(im));
   }
 
   #demapBits(re, im, count, out, offset) {
@@ -440,26 +449,20 @@ export class Modem {
     const dataSymbols = Math.ceil(wantBits / perSymbol);
     const bits = new Uint8Array(dataSymbols * perSymbol);
 
-    // The channel estimate already says which carriers the room notched out.
-    // Flagging their bits as erasures rather than trusting them doubles what
-    // the same parity can repair, because knowing where the damage is worth
-    // twice as much as guessing.
-    const gains = [];
-    for (let i = 0; i < this.carriers; i++) {
-      if (!this.pilotIdx.has(i)) gains.push(Math.hypot(hRe[i], hIm[i]));
-    }
-    const sorted = Float64Array.from(gains).sort();
-    const weakThreshold = sorted[Math.floor(sorted.length * this.weakFraction)];
-    const weakCarrier = [];
+    // How far to trust each bit. Two things go into it: how well the carrier
+    // it rode on came through the room, and how far the received point landed
+    // from the line the decision was made on. A bit that arrived on a notched
+    // carrier and only just fell on one side of that line is the first one the
+    // error correction should be told to distrust.
+    const dataGain = new Float64Array(this.dataCarriers);
     {
       let d = 0;
       for (let i = 0; i < this.carriers; i++) {
         if (this.pilotIdx.has(i)) continue;
-        weakCarrier[d] = Math.hypot(hRe[i], hIm[i]) <= weakThreshold;
-        d++;
+        dataGain[d++] = Math.hypot(hRe[i], hIm[i]);
       }
     }
-    const suspectBit = new Uint8Array(dataSymbols * perSymbol);
+    const bitConfidence = new Float64Array(dataSymbols * perSymbol);
 
     const dRe = new Float64Array(this.dataCarriers);
     const dIm = new Float64Array(this.dataCarriers);
@@ -520,16 +523,20 @@ export class Modem {
       this.#demapBits(dRe, dIm, this.dataCarriers, bits, s * perSymbol);
 
       for (let d = 0; d < this.dataCarriers; d++) {
-        if (!weakCarrier[d]) continue;
+        const margin = this.#decisionMargin(dRe[d], dIm[d]);
         const at = s * perSymbol + d * this.bitsPerCarrier;
-        for (let b = 0; b < this.bitsPerCarrier; b++) suspectBit[at + b] = 1;
+        for (let b = 0; b < this.bitsPerCarrier; b++) {
+          bitConfidence[at + b] = margin * dataGain[d];
+        }
       }
     }
 
-    // A byte is only as trustworthy as its worst bit.
-    const suspectByte = new Uint8Array(Math.ceil(bits.length / 8));
-    for (let i = 0; i < suspectBit.length; i++) {
-      if (suspectBit[i]) suspectByte[i >> 3] = 1;
+    // A byte is only as trustworthy as its shakiest bit.
+    const byteConfidence = new Float64Array(Math.ceil(bits.length / 8));
+    byteConfidence.fill(Infinity);
+    for (let i = 0; i < bitConfidence.length; i++) {
+      const j = i >> 3;
+      if (bitConfidence[i] < byteConfidence[j]) byteConfidence[j] = bitConfidence[i];
     }
 
     const received = bitsToBytes(bits.subarray(0, wantBits));
@@ -537,7 +544,7 @@ export class Modem {
     let bytes = received;
     let repaired = 0;
     if (this.parity > 0) {
-      const fixed = rs.decode(received, this.parity, lengths, this.useErasures ? suspectByte : null);
+      const fixed = rs.decode(received, this.parity, lengths, this.useErasures ? byteConfidence : null);
       if (!fixed) {
         return { ok: false, reason: 'zu viele Fehler für die Fehlerkorrektur', sharpness };
       }
