@@ -327,12 +327,17 @@ export class Modem {
     return [re, im];
   }
 
-  #readHeader(re) {
+  #readHeader(re, gains) {
     const nbits = 40;
     const votes = new Float64Array(nbits);
-    // Soft voting: a carrier sitting deep in one half counts for more than one
-    // that landed near the decision line.
-    for (let i = 0; i < this.carriers; i++) votes[i % nbits] -= re[i];
+    // Soft voting, weighted by how well each carrier actually came through. A
+    // carrier the room notched out gets amplified by the equaliser along with
+    // its noise, so its opinion arrives looking just as confident as a good
+    // carrier's — and unweighted, a handful of dead carriers can outvote the
+    // rest and lose the header while the frame itself arrived perfectly.
+    for (let i = 0; i < this.carriers; i++) {
+      votes[i % nbits] -= re[i] * (gains ? gains[i] : 1);
+    }
     const bits = new Uint8Array(nbits);
     for (let i = 0; i < nbits; i++) bits[i] = votes[i] > 0 ? 1 : 0;
     const header = bitsToBytes(bits);
@@ -363,7 +368,10 @@ export class Modem {
     }
     const mean = sum / corr.length;
     const sharpness = mean > 0 ? peakVal / mean : 0;
-    if (sharpness < 8) return { ok: false, reason: 'kein Rahmenanfang gefunden', sharpness };
+    // Measured on real hardware: a genuine frame peaks in the hundreds, while
+    // room noise wanders up to the twenties. Below that there is nothing worth
+    // the arithmetic.
+    if (sharpness < 30) return { ok: false, reason: 'kein Rahmenanfang gefunden', sharpness };
 
     const start = peakIdx + this.chirpLen + this.gapLen;
     // Reading the window a little into the guard interval costs nothing: it is
@@ -410,8 +418,11 @@ export class Modem {
 
     const headerSym = grab(1);
     if (!headerSym) return { ok: false, reason: 'Signal endet vor dem Kopfsymbol', sharpness };
+    const carrierGain = new Float64Array(this.carriers);
+    for (let i = 0; i < this.carriers; i++) carrierGain[i] = Math.hypot(hRe[i], hIm[i]);
+
     const headerEq = equalise(headerSym);
-    const head = this.#readHeader(headerEq.re);
+    const head = this.#readHeader(headerEq.re, carrierGain);
     if (!head) return { ok: false, reason: 'Kopfsymbol unlesbar', sharpness };
     if (head.bitsPerCarrier !== this.bitsPerCarrier) {
       return { ok: false, reason: `Gegenseite sendet ${head.bitsPerCarrier} Bit je Träger, hier sind ${this.bitsPerCarrier} eingestellt`, sharpness };
