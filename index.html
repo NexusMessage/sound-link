@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>sound-link — Daten per Ton</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --ink: #14171c;
+    --muted: #5c6672;
+    --line: #dfe3e8;
+    --accent: #1f6feb;
+    --ok: #1a7f45;
+    --warn: #9a5b00;
+    --bad: #b3261e;
+    --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216;
+      --card: #171c22;
+      --ink: #e8ecf1;
+      --muted: #97a3b2;
+      --line: #2a323c;
+      --accent: #4d9bff;
+      --ok: #3fbf70;
+      --warn: #e0a33a;
+      --bad: #ff6b5e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 16px 14px 64px;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  h1 { font-size: 1.35rem; margin: 0 0 2px; letter-spacing: -0.01em; }
+  h2 { font-size: 0.82rem; margin: 0 0 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+  .sub { color: var(--muted); font-size: 0.9rem; margin: 0 0 18px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 14px;
+    margin-bottom: 14px;
+  }
+  label { display: block; font-size: 0.85rem; color: var(--muted); margin: 10px 0 4px; }
+  select, input[type=text], input[type=number], textarea {
+    width: 100%;
+    font: inherit;
+    color: var(--ink);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 11px 12px;
+  }
+  textarea { resize: vertical; min-height: 72px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }
+  button {
+    font: inherit;
+    font-weight: 600;
+    color: #fff;
+    background: var(--accent);
+    border: 0;
+    border-radius: 10px;
+    padding: 13px 16px;
+    min-height: 48px;
+    cursor: pointer;
+  }
+  button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); font-weight: 500; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button.on { background: var(--bad); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 140px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px 12px; }
+  .stat { min-width: 0; }
+  .stat b { display: block; font-variant-numeric: tabular-nums; font-size: 1.05rem; font-weight: 600; }
+  .stat span { font-size: 0.72rem; color: var(--muted); }
+  .meter { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; margin-top: 10px; }
+  .meter i { display: block; height: 100%; width: 0; background: var(--ok); transition: width 90ms linear; }
+  .note { font-size: 0.84rem; color: var(--muted); margin-top: 10px; }
+  .flag { border-left: 3px solid var(--warn); padding-left: 10px; color: var(--warn); font-size: 0.86rem; margin-top: 10px; }
+  .flag.bad { border-color: var(--bad); color: var(--bad); }
+  .flag.ok { border-color: var(--ok); color: var(--ok); }
+  #log { white-space: pre-wrap; word-break: break-word; }
+  .hits { font-variant-numeric: tabular-nums; }
+  .hits div { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 0.9rem; }
+  .hits div:last-child { border-bottom: 0; }
+  .hits code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  footer { color: var(--muted); font-size: 0.78rem; text-align: center; margin-top: 22px; }
+</style>
+</head>
+<body>
+
+<h1>sound-link</h1>
+<p class="sub">Kurze Nachrichten von Handy zu Handy — nur über Lautsprecher und Mikrofon.</p>
+
+<div class="card">
+  <h2>Verfahren</h2>
+  <label for="mode">Auf beiden Geräten dasselbe einstellen</label>
+  <select id="mode">
+    <optgroup label="ggwave · hörbar">
+      <option value="gg:AUDIBLE_NORMAL" selected>Hörbar, robust (1875–6328 Hz, 192 ms je Symbol)</option>
+      <option value="gg:AUDIBLE_FAST">Hörbar, schnell (128 ms je Symbol)</option>
+      <option value="gg:AUDIBLE_FASTEST">Hörbar, am schnellsten (64 ms je Symbol)</option>
+    </optgroup>
+    <optgroup label="ggwave · fast unhörbar">
+      <option value="gg:ULTRASOUND_NORMAL">Hoch, robust (15000–19453 Hz, 192 ms)</option>
+      <option value="gg:ULTRASOUND_FAST">Hoch, schnell (128 ms)</option>
+      <option value="gg:ULTRASOUND_FASTEST">Hoch, am schnellsten (64 ms)</option>
+    </optgroup>
+    <optgroup label="QRtone · hörbar">
+      <option value="qr:2">QRtone, Fehlerschutz mittel (1720–7205 Hz)</option>
+      <option value="qr:3">QRtone, Fehlerschutz maximal</option>
+    </optgroup>
+  </select>
+
+  <label for="fixed">Rahmenlänge</label>
+  <select id="fixed">
+    <option value="0" selected>Variabel — beliebig langer Text, kostet 0,68 s Vorspann</option>
+    <option value="16">Fest auf 16 Zeichen — schneller, beide Seiten müssen es gleich haben</option>
+    <option value="64">Fest auf 64 Zeichen</option>
+  </select>
+  <p class="note">Bei fester Rahmenlänge entfallen die Markierungstöne am Anfang und Ende. Der Text wird dann auf die eingestellte Länge aufgefüllt oder abgeschnitten. Gilt nur für ggwave.</p>
+</div>
+
+<div class="card">
+  <h2>Senden</h2>
+  <label for="msg">Nachricht</label>
+  <input id="msg" type="text" value="K7Q2-M4X8-P1R6" autocomplete="off" autocapitalize="off" spellcheck="false">
+  <div class="row" style="margin-top:8px">
+    <button class="ghost" id="fill16">16 Zeichen</button>
+    <button class="ghost" id="fill64">64 Zeichen</button>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <button id="send">Einmal senden</button>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <input id="repeats" type="number" min="1" max="99" value="10" inputmode="numeric" aria-label="Anzahl Wiederholungen">
+    <button class="ghost" id="burst">Serie senden</button>
+  </div>
+  <p class="note">Serie schickt dieselbe Nachricht mehrfach hintereinander, mit kurzer Pause dazwischen. Auf dem hörenden Gerät zählt sich die Trefferzahl von selbst hoch.</p>
+  <div id="sendFlag"></div>
+</div>
+
+<div class="card">
+  <h2>Empfangen</h2>
+  <div class="row">
+    <button id="listen">Zuhören</button>
+    <button class="ghost" id="reset">Zähler zurücksetzen</button>
+  </div>
+  <div class="meter" aria-hidden="true"><i id="level"></i></div>
+  <div class="stats" style="margin-top:12px">
+    <div class="stat"><b id="sCount">0</b><span>Treffer</span></div>
+    <div class="stat"><b id="sCtx">—</b><span>Kontext Hz</span></div>
+    <div class="stat"><b id="sTrack">—</b><span>Mikrofon Hz</span></div>
+    <div class="stat"><b id="sPeak">—</b><span>Pegel</span></div>
+  </div>
+  <div id="micFlag"></div>
+  <div class="hits" id="hits" style="margin-top:12px"></div>
+</div>
+
+<div class="card">
+  <h2>Protokoll</h2>
+  <textarea id="log" rows="7" readonly></textarea>
+  <div class="row" style="margin-top:8px">
+    <button class="ghost" id="copy">Alles kopieren</button>
+    <button class="ghost" id="clear">Protokoll leeren</button>
+  </div>
+</div>
+
+<footer>Lautstärke ganz aufdrehen. Bluetooth-Kopfhörer trennen — sonst schaltet der Browser auf den Sprachkanal und das obere Band verschwindet.</footer>
+
+<script src="vendor/ggwave.js"></script>
+<script src="vendor/qrtone_emscripten.js"></script>
+<script>
+(() => {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const el = {
+    mode: $('mode'), fixed: $('fixed'), msg: $('msg'),
+    send: $('send'), burst: $('burst'), repeats: $('repeats'),
+    listen: $('listen'), reset: $('reset'), copy: $('copy'), clear: $('clear'),
+    fill16: $('fill16'), fill64: $('fill64'),
+    level: $('level'), log: $('log'), hits: $('hits'),
+    sCount: $('sCount'), sCtx: $('sCtx'), sTrack: $('sTrack'), sPeak: $('sPeak'),
+    micFlag: $('micFlag'), sendFlag: $('sendFlag'),
+  };
+
+  // ---------- log ----------
+  const lines = [];
+  function log(text) {
+    const t = new Date().toTimeString().slice(0, 8);
+    lines.push(`${t}  ${text}`);
+    el.log.value = lines.join('\n');
+    el.log.scrollTop = el.log.scrollHeight;
+  }
+  function flag(node, text, kind) {
+    node.innerHTML = '';
+    if (!text) return;
+    const d = document.createElement('div');
+    d.className = 'flag' + (kind ? ' ' + kind : '');
+    d.textContent = text;
+    node.appendChild(d);
+  }
+
+  // ---------- shared audio context (ggwave path) ----------
+  let ctx = null;
+  function audioContext() {
+    if (!ctx) {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      el.sCtx.textContent = ctx.sampleRate;
+      log(`Audio-Kontext geöffnet, ${ctx.sampleRate} Hz`);
+    }
+    // resume() never settles when the page has no user gesture yet, so fire and
+    // watch the state instead of awaiting it.
+    if (ctx.state !== 'running') ctx.resume();
+    return ctx;
+  }
+
+  // ---------- ggwave ----------
+  let gg = null;           // module
+  let ggInstance = null;   // handle
+  let ggInstanceKey = '';  // rate + fixed length the handle was built for
+
+  const ggReady = (typeof ggwave_factory === 'function')
+    ? ggwave_factory().then((m) => { gg = m; log('ggwave geladen'); })
+    : Promise.reject(new Error('ggwave.js fehlt'));
+
+  function ggProtocol(name) {
+    const id = gg.ProtocolId['GGWAVE_PROTOCOL_' + name];
+    if (id === undefined) throw new Error('Unbekanntes ggwave-Verfahren: ' + name);
+    return id;
+  }
+
+  function ggHandle() {
+    const rate = audioContext().sampleRate;
+    const fixed = parseInt(el.fixed.value, 10) || 0;
+    const key = `${rate}/${fixed}`;
+    if (ggInstance !== null && ggInstanceKey === key) return ggInstance;
+    if (ggInstance !== null) gg.free(ggInstance);
+    const p = gg.getDefaultParameters();
+    p.sampleRateInp = rate;
+    p.sampleRateOut = rate;
+    if (fixed > 0) p.payloadLength = fixed;
+    ggInstance = gg.init(p);
+    ggInstanceKey = key;
+    log(`ggwave neu aufgesetzt (${rate} Hz, Rahmen ${fixed || 'variabel'})`);
+    return ggInstance;
+  }
+
+  // Reinterpret the bytes of one typed array as another, which is how ggwave
+  // hands waveforms across the WASM boundary.
+  function reinterpret(src, Type) {
+    const buffer = new ArrayBuffer(src.byteLength);
+    new src.constructor(buffer).set(src);
+    return new Type(buffer);
+  }
+
+  function padTo(text, len) {
+    if (!len) return text;
+    return text.length >= len ? text.slice(0, len) : text.padEnd(len, ' ');
+  }
+
+  // ---------- sending ----------
+  let sending = false;
+
+  async function sendOnce() {
+    const [lib, arg] = el.mode.value.split(':');
+    const text = el.msg.value;
+    if (!text) return;
+    if (lib === 'qr') return sendQrtone(text, parseInt(arg, 10));
+    await ggReady;
+    const c = audioContext();
+    const fixed = parseInt(el.fixed.value, 10) || 0;
+    const payload = padTo(text, fixed);
+    const waveform = gg.encode(ggHandle(), payload, ggProtocol(arg), 15);
+    const samples = reinterpret(waveform, Float32Array);
+    const buf = c.createBuffer(1, samples.length, c.sampleRate);
+    buf.getChannelData(0).set(samples);
+    const src = c.createBufferSource();
+    src.buffer = buf;
+    src.connect(c.destination);
+    const seconds = samples.length / c.sampleRate;
+    src.start();
+    log(`gesendet: "${payload}" · ${arg} · ${seconds.toFixed(2)} s`);
+    if (c.state !== 'running') {
+      flag(el.sendFlag, 'Der Browser hat den Ton blockiert. Tippe irgendwo auf die Seite und sende erneut.', 'bad');
+    } else {
+      flag(el.sendFlag, '');
+    }
+    return new Promise((done) => { src.onended = done; });
+  }
+
+  function sendQrtone(text, fec) {
+    return new Promise((done) => {
+      const bytes = Array.from(new TextEncoder().encode(text));
+      const tx = QRTone.transmitter({ onFinish: () => { tx.destroy(); done(); } });
+      tx.transmit(bytes, fec, true);
+      log(`gesendet über QRtone: "${text}" · Fehlerschutz ${fec} · mit Prüfsumme`);
+    });
+  }
+
+  el.send.addEventListener('click', async () => {
+    if (sending) return;
+    sending = true; el.send.disabled = true; el.burst.disabled = true;
+    try { await sendOnce(); } catch (e) { log('Fehler beim Senden: ' + e.message); }
+    sending = false; el.send.disabled = false; el.burst.disabled = false;
+  });
+
+  el.burst.addEventListener('click', async () => {
+    if (sending) return;
+    const n = Math.max(1, Math.min(99, parseInt(el.repeats.value, 10) || 1));
+    sending = true; el.send.disabled = true; el.burst.disabled = true;
+    log(`Serie gestartet: ${n} Sendungen`);
+    for (let i = 1; i <= n && sending; i++) {
+      try { await sendOnce(); } catch (e) { log('Fehler beim Senden: ' + e.message); break; }
+      await new Promise((r) => setTimeout(r, 400));
+      el.burst.textContent = `Serie läuft… ${i}/${n}`;
+    }
+    el.burst.textContent = 'Serie senden';
+    log('Serie beendet');
+    sending = false; el.send.disabled = false; el.burst.disabled = false;
+  });
+
+  el.fill16.addEventListener('click', () => { el.msg.value = randomCode(16); });
+  el.fill64.addEventListener('click', () => { el.msg.value = randomCode(64); });
+  function randomCode(len) {
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let out = '';
+    for (let i = 0; i < len; i++) {
+      if (i > 0 && i % 4 === 0 && out.length < len) { out += '-'; continue; }
+      out += alphabet[Math.floor(Math.random() * alphabet.length)];
+    }
+    return out.slice(0, len);
+  }
+
+  // ---------- receiving ----------
+  let listening = false;
+  let stream = null;
+  let node = null;
+  let source = null;
+  let qrRx = null;
+  const counts = new Map();
+  let peak = 0;
+
+  const workletSource = `
+    class Collector extends AudioWorkletProcessor {
+      constructor() {
+        super();
+        // Preallocated once: allocating inside process() glitches the audio
+        // thread on Android.
+        this.buf = new Float32Array(4096);
+        this.n = 0;
+      }
+      process(inputs) {
+        const ch = inputs[0] && inputs[0][0];
+        if (!ch) return true;
+        for (let i = 0; i < ch.length; i++) {
+          this.buf[this.n++] = ch[i];
+          if (this.n === this.buf.length) {
+            // Cloned, not transferred, so the buffer stays reusable.
+            this.port.postMessage(this.buf);
+            this.n = 0;
+          }
+        }
+        return true;
+      }
+    }
+    registerProcessor('collector', Collector);
+  `;
+
+  async function startListening() {
+    const [lib, arg] = el.mode.value.split(':');
+    if (lib === 'qr') {
+      qrRx = QRTone.receiver({ onReceive: (payload) => {
+        const text = new TextDecoder().decode(new Uint8Array(payload));
+        record(text);
+      }});
+      log('QRtone hört zu');
+      return;
+    }
+
+    await ggReady;
+    const c = audioContext();
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        // The single biggest lever: Chrome's voice processing gates the upper
+        // bands on what the speech band looks like, which mangles data tones.
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        channelCount: 1,
+      },
+    });
+
+    const track = stream.getAudioTracks()[0];
+    const settings = track.getSettings ? track.getSettings() : {};
+    el.sTrack.textContent = settings.sampleRate || '?';
+    log(`Mikrofon offen: ${track.label || 'ohne Namen'} · ${settings.sampleRate || '?'} Hz`);
+    if (settings.sampleRate && settings.sampleRate < 44100) {
+      flag(el.micFlag, `Das Mikrofon läuft mit nur ${settings.sampleRate} Hz. Das ist der Sprachkanal eines Bluetooth-Geräts — oben ist dann nichts mehr. Bluetooth trennen und neu starten.`, 'bad');
+    } else if (settings.echoCancellation || settings.noiseSuppression || settings.autoGainControl) {
+      flag(el.micFlag, 'Das Gerät verarbeitet den Ton trotz Abschaltung weiter. Erwarte schlechtere Ergebnisse, vor allem im oberen Band.', 'warn');
+    } else {
+      flag(el.micFlag, 'Mikrofon läuft ungefiltert.', 'ok');
+    }
+
+    const blob = new Blob([workletSource], { type: 'text/javascript' });
+    const url = URL.createObjectURL(blob);
+    await c.audioWorklet.addModule(url);
+    URL.revokeObjectURL(url);
+
+    source = c.createMediaStreamSource(stream);
+    node = new AudioWorkletNode(c, 'collector');
+    node.port.onmessage = (ev) => onSamples(ev.data);
+    source.connect(node);
+    // A worklet with no output still needs a sink to be pulled by the graph.
+    node.connect(c.createGain()).connect(c.destination);
+  }
+
+  let silentBlocks = 0;
+  function onSamples(block) {
+    let sum = 0;
+    for (let i = 0; i < block.length; i++) sum += block[i] * block[i];
+    const rms = Math.sqrt(sum / block.length);
+    peak = Math.max(peak * 0.92, rms);
+    el.level.style.width = Math.min(100, peak * 400).toFixed(0) + '%';
+    el.sPeak.textContent = (20 * Math.log10(peak + 1e-9)).toFixed(0) + ' dB';
+
+    // Android hands out digital silence instead of an error when another app
+    // holds the microphone. Say so rather than letting it look like bad range.
+    if (rms < 1e-7) {
+      if (++silentBlocks === 60) {
+        flag(el.micFlag, 'Das Mikrofon liefert exakte Stille. Eine andere App hält es vermutlich fest — Anrufe, Sprachassistent, Aufnahme-App schließen.', 'bad');
+      }
+    } else {
+      silentBlocks = 0;
+    }
+
+    try {
+      const res = gg.decode(ggHandle(), reinterpret(block, Int8Array));
+      if (res && res.length > 0) record(new TextDecoder('utf-8').decode(res));
+    } catch (e) {
+      // decode() throws on a stale handle after a settings change; the next
+      // block runs against the fresh one.
+    }
+  }
+
+  // Fixed-length framing has no end marker, so the decoder emits the same
+  // payload more than once per transmission. A send takes at least 1 s, so
+  // anything repeating faster than that is the same one arriving twice.
+  let lastText = '';
+  let lastAt = 0;
+  function record(text) {
+    const now = performance.now();
+    if (text === lastText && now - lastAt < 900) { lastAt = now; return; }
+    lastText = text;
+    lastAt = now;
+    counts.set(text, (counts.get(text) || 0) + 1);
+    let total = 0;
+    for (const n of counts.values()) total += n;
+    el.sCount.textContent = total;
+    el.hits.innerHTML = '';
+    for (const [t, n] of [...counts.entries()].sort((a, b) => b[1] - a[1])) {
+      const row = document.createElement('div');
+      const code = document.createElement('code');
+      code.textContent = t;
+      const num = document.createElement('span');
+      num.textContent = n + '×';
+      row.append(code, num);
+      el.hits.appendChild(row);
+    }
+    log(`empfangen: "${text}"`);
+  }
+
+  function stopListening() {
+    if (qrRx) { qrRx.destroy(); QRTone.disconnect(); qrRx = null; }
+    if (node) { node.port.onmessage = null; node.disconnect(); node = null; }
+    if (source) { source.disconnect(); source = null; }
+    if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+    el.level.style.width = '0';
+    log('Zuhören beendet');
+  }
+
+  el.listen.addEventListener('click', async () => {
+    if (listening) {
+      stopListening();
+      listening = false;
+      el.listen.textContent = 'Zuhören';
+      el.listen.classList.remove('on');
+      return;
+    }
+    el.listen.disabled = true;
+    try {
+      await startListening();
+      listening = true;
+      el.listen.textContent = 'Zuhören beenden';
+      el.listen.classList.add('on');
+    } catch (e) {
+      log('Mikrofon nicht verfügbar: ' + e.message);
+      flag(el.micFlag, 'Das Mikrofon ließ sich nicht öffnen: ' + e.message, 'bad');
+    }
+    el.listen.disabled = false;
+  });
+
+  el.reset.addEventListener('click', () => {
+    counts.clear();
+    el.sCount.textContent = '0';
+    el.hits.innerHTML = '';
+    log('Zähler zurückgesetzt');
+  });
+
+  el.mode.addEventListener('change', () => {
+    log('Verfahren: ' + el.mode.options[el.mode.selectedIndex].text);
+    if (listening) { stopListening(); listening = false; el.listen.textContent = 'Zuhören'; el.listen.classList.remove('on'); }
+  });
+  el.fixed.addEventListener('change', () => {
+    log('Rahmenlänge: ' + el.fixed.options[el.fixed.selectedIndex].text);
+  });
+
+  el.copy.addEventListener('click', async () => {
+    const head = [
+      `sound-link · ${new Date().toISOString()}`,
+      `Verfahren: ${el.mode.options[el.mode.selectedIndex].text}`,
+      `Rahmenlänge: ${el.fixed.options[el.fixed.selectedIndex].text}`,
+      `Kontext: ${el.sCtx.textContent} Hz · Mikrofon: ${el.sTrack.textContent} Hz`,
+      `Treffer gesamt: ${el.sCount.textContent}`,
+      `Gerät: ${navigator.userAgent}`,
+      '',
+    ].join('\n');
+    const text = head + lines.join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      el.copy.textContent = 'Kopiert';
+      setTimeout(() => { el.copy.textContent = 'Alles kopieren'; }, 1500);
+    } catch (e) {
+      el.log.value = text;
+      el.log.removeAttribute('readonly');
+      el.log.select();
+    }
+  });
+
+  el.clear.addEventListener('click', () => { lines.length = 0; el.log.value = ''; });
+
+  ggReady.catch((e) => log('ggwave konnte nicht geladen werden: ' + e.message));
+  log('bereit');
+})();
+</script>
+</body>
+</html>
