@@ -186,6 +186,7 @@
 <script src="vendor/qrtone_emscripten.js"></script>
 <script type="module">
 import { Modem } from './modem/ofdm.js';
+import { Resampler } from './modem/resample.js';
 
 (() => {
   'use strict';
@@ -505,45 +506,44 @@ import { Modem } from './modem/ofdm.js';
   let ringAt = 0;
   let ringFilled = 0;
   let modemTimer = null;
-  let resampleCarry = 0;
+  let resampler = null;
   let loudSince = 0;
+  let lastAttemptLog = 0;
 
   function startModemListener(ctxRef) {
     ring = new Float32Array(WINDOW_SECONDS * MODEM_RATE);
     ringAt = 0;
     ringFilled = 0;
-    resampleCarry = 0;
     loudSince = 0;
+    lastAttemptLog = 0;
+    resampler = new Resampler(ctxRef.sampleRate, MODEM_RATE);
     const modem = modemFor();
     const d = modem.describe();
     log(`Vielträger bereit: ${d.carriers} Träger, ${d.spacingHz} Hz Abstand, ` +
-        `${d.guardMs} ms Schutz, roh ${d.peakBitrate} bit/s`);
+        `${d.guardMs} ms Schutz, roh ${d.peakBitrate} bit/s, ` +
+        `Mikrofon ${ctxRef.sampleRate} Hz`);
     modemTimer = setInterval(() => tryModemDecode(), 700);
   }
 
-  function pushToRing(block, fromRate) {
-    if (!ring) return;
-    const step = fromRate / MODEM_RATE;
-    // Linear interpolation is enough here: the frame sync and the equaliser
-    // absorb what little it costs, and anything fancier would run on the
-    // audio thread's budget.
-    for (let p = resampleCarry; p < block.length - 1; p += step) {
-      const k = Math.floor(p);
-      const f = p - k;
-      ring[ringAt] = block[k] * (1 - f) + block[k + 1] * f;
+  function pushToRing(block) {
+    if (!ring || !resampler) return;
+    resampler.push(block, (v) => {
+      ring[ringAt] = v;
       ringAt = (ringAt + 1) % ring.length;
       if (ringFilled < ring.length) ringFilled++;
-    }
-    // Carry the fractional position into the next block so no sample is lost
-    // or counted twice at the seam.
-    const consumed = Math.ceil((block.length - 1 - resampleCarry) / step);
-    resampleCarry = resampleCarry + consumed * step - block.length;
-    if (resampleCarry < 0) resampleCarry = 0;
+    });
   }
 
   function tryModemDecode() {
     if (!ring || ringFilled < ring.length / 3) return;
-    if (Date.now() - loudSince > 12000) return; // nothing worth listening to
+    if (Date.now() - loudSince > 12000) {
+      const now = Date.now();
+      if (now - lastAttemptLog > 5000) {
+        lastAttemptLog = now;
+        log('Vielträger: nichts Lautes gehört — Lautstärke der Gegenseite hoch?');
+      }
+      return;
+    }
 
     const ordered = new Float64Array(ringFilled);
     const start = ringFilled === ring.length ? ringAt : 0;
@@ -562,6 +562,19 @@ import { Modem } from './modem/ofdm.js';
       ringFilled = 0;
       ringAt = 0;
       loudSince = 0;
+      return;
+    }
+
+    // Silence on failure is the worst possible feedback — it looks identical
+    // to a microphone that is not listening at all. So say what went wrong,
+    // and say how sharp the frame-start peak was: below about 8 nothing was
+    // found, well above it means the signal arrived and the data was the
+    // problem.
+    const now = Date.now();
+    if (now - lastAttemptLog > 2500) {
+      lastAttemptLog = now;
+      const peak = res.sharpness ? res.sharpness.toFixed(0) : '0';
+      log(`Vielträger: kein Erfolg — ${res.reason} (Anfangs-Spitze ${peak})`);
     }
   }
 
@@ -569,6 +582,7 @@ import { Modem } from './modem/ofdm.js';
     if (modemTimer) clearInterval(modemTimer);
     modemTimer = null;
     ring = null;
+    resampler = null;
   }
 
   let silentBlocks = 0;
@@ -591,8 +605,8 @@ import { Modem } from './modem/ofdm.js';
     }
 
     if (engine === 'mo') {
-      if (rms > 0.004) loudSince = Date.now();
-      pushToRing(block, audioContext().sampleRate);
+      if (rms > 0.002) loudSince = Date.now();
+      pushToRing(block);
       return;
     }
 
