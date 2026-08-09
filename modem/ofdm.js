@@ -50,6 +50,10 @@ export class Modem {
     // retried at several depths, rather than blindly flagging a fixed share of
     // carriers — that earlier version spent parity it did not earn back.
     this.useErasures = opts.useErasures !== false;
+    // How far above the signal's average level the peaks are allowed to reach
+    // before being clipped. Around three is the usual compromise: it costs a
+    // little distortion and buys several decibels of average level.
+    this.crestFactor = opts.crestFactor === undefined ? 3 : opts.crestFactor;
     this.chirpMs = opts.chirpMs === undefined ? 150 : opts.chirpMs;
     // Silence between the sync sweep and the first symbol. It has to outlast
     // the sweep's own reverberation, or the room's memory of the chirp
@@ -298,13 +302,30 @@ export class Modem {
     // would bury the chirp — and with it the receiver's only way of finding
     // where the frame starts.
     const dataStart = this.chirpLen + this.gapLen;
-    let dataPeak = 0;
-    for (let i = dataStart; i < out.length; i++) dataPeak = Math.max(dataPeak, Math.abs(out[i]));
-    const dataGain = dataPeak > 0 ? 0.7 / dataPeak : 1;
+
+    // Hundreds of carriers occasionally line up in phase, and those rare spikes
+    // stand far above the signal's average level. Normalising on the peak would
+    // therefore make everything else quiet — and worse, a phone at full volume
+    // limits those spikes in its own speaker anyway, which distorts every
+    // carrier at once rather than just the loud moment. Clipping them here,
+    // deliberately and gently, is the lesser damage and lifts the average level
+    // several decibels.
+    let sum = 0;
+    let count = 0;
+    for (let i = dataStart; i < out.length; i++) { sum += out[i] * out[i]; count++; }
+    const rms = count > 0 ? Math.sqrt(sum / count) : 0;
+    const ceiling = rms * this.crestFactor;
 
     const wave = new Float32Array(out.length);
     for (let i = 0; i < this.chirpLen; i++) wave[i] = out[i] * 0.9;
-    for (let i = dataStart; i < out.length; i++) wave[i] = out[i] * dataGain;
+    if (rms > 0) {
+      const gain = 0.9 / ceiling;
+      for (let i = dataStart; i < out.length; i++) {
+        const v = out[i];
+        const clipped = v > ceiling ? ceiling : (v < -ceiling ? -ceiling : v);
+        wave[i] = clipped * gain;
+      }
+    }
     return wave;
   }
 
