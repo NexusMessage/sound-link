@@ -118,6 +118,12 @@
       <option value="qr:2">QRtone, Fehlerschutz mittel (1720–7205 Hz)</option>
       <option value="qr:3">QRtone, Fehlerschutz maximal</option>
     </optgroup>
+    <optgroup label="Vielträger (eigenes Verfahren)">
+      <option value="mo:audible:1">Vielträger hörbar, robust — 512 Träger, 2–8 kHz</option>
+      <option value="mo:audible:2">Vielträger hörbar, schnell — doppelte Rate</option>
+      <option value="mo:ultrasonic:1">Vielträger hoch, robust — 15–19,5 kHz</option>
+      <option value="mo:ultrasonic:2">Vielträger hoch, schnell</option>
+    </optgroup>
   </select>
 
   <label for="fixed">Rahmenlänge</label>
@@ -178,9 +184,17 @@
 
 <script src="vendor/ggwave.js"></script>
 <script src="vendor/qrtone_emscripten.js"></script>
-<script>
+<script type="module">
+import { Modem } from './modem/ofdm.js';
+
 (() => {
   'use strict';
+
+  // The modem always runs at 48 kHz internally, whatever the device's own rate
+  // is. Its carriers are defined in hertz, and two phones that disagree about
+  // their sample rate would otherwise put them at different frequencies and
+  // never hear each other.
+  const MODEM_RATE = 48000;
 
   const $ = (id) => document.getElementById(id);
   const el = {
@@ -271,11 +285,41 @@
   // ---------- sending ----------
   let sending = false;
 
+  function modemFor() {
+    const [, band, bits] = el.mode.value.split(':');
+    return new Modem({
+      sampleRate: MODEM_RATE,
+      band,
+      bitsPerCarrier: parseInt(bits, 10),
+    });
+  }
+
+  function playSamples(wave, rate) {
+    const c = audioContext();
+    // A buffer declared at a different rate than the context is resampled on
+    // playback, which is exactly what we want here.
+    const buf = c.createBuffer(1, wave.length, rate);
+    buf.getChannelData(0).set(wave);
+    const src = c.createBufferSource();
+    src.buffer = buf;
+    src.connect(c.destination);
+    src.start();
+    return new Promise((done) => { src.onended = done; });
+  }
+
   async function sendOnce() {
     const [lib, arg] = el.mode.value.split(':');
     const text = el.msg.value;
     if (!text) return;
     if (lib === 'qr') return sendQrtone(text, parseInt(arg, 10));
+    if (lib === 'mo') {
+      const modem = modemFor();
+      const wave = modem.encode(text);
+      const seconds = wave.length / MODEM_RATE;
+      log(`gesendet über Vielträger: "${text}" · ${seconds.toFixed(2)} s · ` +
+          `${Math.round((text.length * 8) / seconds)} bit/s netto`);
+      return playSamples(wave, MODEM_RATE);
+    }
     await ggReady;
     const c = audioContext();
     const fixed = parseInt(el.fixed.value, 10) || 0;
@@ -348,6 +392,7 @@
   let source = null;
   let qrRx = null;
   let decoding = true; // false while QRtone owns the decoding, meter stays ours
+  let engine = 'gg';
   const counts = new Map();
   let peak = 0;
 
@@ -390,11 +435,16 @@
   };
 
   async function startListening() {
-    const [lib, arg] = el.mode.value.split(':');
+    const [lib] = el.mode.value.split(':');
+    engine = lib;
     decoding = (lib === 'gg');
     if (decoding) await ggReady;
     const c = audioContext();
     await openMic(c);
+    if (lib === 'mo') {
+      startModemListener(c);
+      log('Vielträger hört zu');
+    }
     if (lib === 'qr') {
       qrRx = QRTone.receiver({
         onReceive: (payload) => record(new TextDecoder().decode(new Uint8Array(payload))),
@@ -444,6 +494,83 @@
     node.connect(c.createGain()).connect(c.destination);
   }
 
+  // ---- multi-carrier receiver ----
+  //
+  // Unlike the streaming decoders, this one needs a whole frame at once. So the
+  // microphone feeds a rolling window and a timer tries to decode it, but only
+  // when something was actually loud enough to be worth the arithmetic.
+
+  const WINDOW_SECONDS = 9;
+  let ring = null;
+  let ringAt = 0;
+  let ringFilled = 0;
+  let modemTimer = null;
+  let resampleCarry = 0;
+  let loudSince = 0;
+
+  function startModemListener(ctxRef) {
+    ring = new Float32Array(WINDOW_SECONDS * MODEM_RATE);
+    ringAt = 0;
+    ringFilled = 0;
+    resampleCarry = 0;
+    loudSince = 0;
+    const modem = modemFor();
+    const d = modem.describe();
+    log(`Vielträger bereit: ${d.carriers} Träger, ${d.spacingHz} Hz Abstand, ` +
+        `${d.guardMs} ms Schutz, roh ${d.peakBitrate} bit/s`);
+    modemTimer = setInterval(() => tryModemDecode(), 700);
+  }
+
+  function pushToRing(block, fromRate) {
+    if (!ring) return;
+    const step = fromRate / MODEM_RATE;
+    // Linear interpolation is enough here: the frame sync and the equaliser
+    // absorb what little it costs, and anything fancier would run on the
+    // audio thread's budget.
+    for (let p = resampleCarry; p < block.length - 1; p += step) {
+      const k = Math.floor(p);
+      const f = p - k;
+      ring[ringAt] = block[k] * (1 - f) + block[k + 1] * f;
+      ringAt = (ringAt + 1) % ring.length;
+      if (ringFilled < ring.length) ringFilled++;
+    }
+    // Carry the fractional position into the next block so no sample is lost
+    // or counted twice at the seam.
+    const consumed = Math.ceil((block.length - 1 - resampleCarry) / step);
+    resampleCarry = resampleCarry + consumed * step - block.length;
+    if (resampleCarry < 0) resampleCarry = 0;
+  }
+
+  function tryModemDecode() {
+    if (!ring || ringFilled < ring.length / 3) return;
+    if (Date.now() - loudSince > 12000) return; // nothing worth listening to
+
+    const ordered = new Float64Array(ringFilled);
+    const start = ringFilled === ring.length ? ringAt : 0;
+    for (let i = 0; i < ringFilled; i++) ordered[i] = ring[(start + i) % ring.length];
+
+    let res;
+    try {
+      res = modemFor().decode(ordered);
+    } catch (e) {
+      log('Vielträger-Fehler: ' + e.message);
+      return;
+    }
+    if (res.ok) {
+      record(res.text);
+      log(`Vielträger: ${res.symbols} Symbole, ${res.repaired || 0} Bytes repariert`);
+      ringFilled = 0;
+      ringAt = 0;
+      loudSince = 0;
+    }
+  }
+
+  function stopModemListener() {
+    if (modemTimer) clearInterval(modemTimer);
+    modemTimer = null;
+    ring = null;
+  }
+
   let silentBlocks = 0;
   function onSamples(block) {
     let sum = 0;
@@ -461,6 +588,12 @@
       }
     } else {
       silentBlocks = 0;
+    }
+
+    if (engine === 'mo') {
+      if (rms > 0.004) loudSince = Date.now();
+      pushToRing(block, audioContext().sampleRate);
+      return;
     }
 
     if (!decoding) return;
@@ -501,6 +634,7 @@
   }
 
   function stopListening() {
+    stopModemListener();
     if (qrRx) { qrRx.destroy(); QRTone.disconnect(); qrRx = null; }
     if (node) { node.port.onmessage = null; node.disconnect(); node = null; }
     if (source) { source.disconnect(); source = null; }
