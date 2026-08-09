@@ -48,6 +48,13 @@ measured at this range. That is the open question this page exists to answer.
   look like poor range.
 - **Digital silence is reported.** Android hands out silence rather than an
   error when another app holds the microphone.
+- **QRtone is handed our microphone stream.** Left alone it opens the mic
+  through the legacy callback API with the old `optional: [{goog…}]` constraint
+  form, which modern Chrome ignores — so its receiver would listen through the
+  very processing chain the comparison needs switched off, and a failure to
+  open the mic would pass silently. The page shims `navigator.getUserMedia` to
+  hand it the same stream ggwave gets, and passes an `onCreateFail` so the
+  failure is visible.
 - **AudioWorklet, not ScriptProcessorNode.** Demodulation must not share a
   thread with layout and garbage collection. The processor is loaded from a
   `blob:` URL and allocates nothing inside `process()`.

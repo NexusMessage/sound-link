@@ -347,6 +347,7 @@
   let node = null;
   let source = null;
   let qrRx = null;
+  let decoding = true; // false while QRtone owns the decoding, meter stays ours
   const counts = new Map();
   let peak = 0;
 
@@ -376,19 +377,37 @@
     registerProcessor('collector', Collector);
   `;
 
+  // QRtone opens the microphone itself, through the legacy callback API and
+  // the old `optional: [{goog…}]` constraint form. Modern Chrome ignores those
+  // entries, so its receiver would listen through echo cancellation, noise
+  // suppression and gain control — the exact processing that mangles data
+  // tones, and the one thing both candidates must have switched off if the
+  // comparison is to mean anything. Handing it our own stream instead puts
+  // both on identical microphone conditions.
+  navigator.getUserMedia = function (_constraints, ok, fail) {
+    if (stream) { ok(stream); return; }
+    fail(new Error('Mikrofon war nicht offen'));
+  };
+
   async function startListening() {
     const [lib, arg] = el.mode.value.split(':');
-    if (lib === 'qr') {
-      qrRx = QRTone.receiver({ onReceive: (payload) => {
-        const text = new TextDecoder().decode(new Uint8Array(payload));
-        record(text);
-      }});
-      log('QRtone hört zu');
-      return;
-    }
-
-    await ggReady;
+    decoding = (lib === 'gg');
+    if (decoding) await ggReady;
     const c = audioContext();
+    await openMic(c);
+    if (lib === 'qr') {
+      qrRx = QRTone.receiver({
+        onReceive: (payload) => record(new TextDecoder().decode(new Uint8Array(payload))),
+        onCreateFail: (reason) => {
+          log('QRtone bekam das Mikrofon nicht: ' + reason);
+          flag(el.micFlag, 'QRtone konnte das Mikrofon nicht übernehmen: ' + reason, 'bad');
+        },
+      });
+      log('QRtone hört zu');
+    }
+  }
+
+  async function openMic(c) {
     stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         // The single biggest lever: Chrome's voice processing gates the upper
@@ -444,6 +463,7 @@
       silentBlocks = 0;
     }
 
+    if (!decoding) return;
     try {
       const res = gg.decode(ggHandle(), reinterpret(block, Int8Array));
       if (res && res.length > 0) record(new TextDecoder('utf-8').decode(res));
