@@ -536,7 +536,8 @@ import { Resampler } from './modem/resample.js';
 
   function tryModemDecode() {
     if (!ring || ringFilled < ring.length / 3) return;
-    if (Date.now() - loudSince > 12000) {
+    const quietFor = Date.now() - loudSince;
+    if (quietFor > 12000) {
       const now = Date.now();
       if (now - lastAttemptLog > 5000) {
         lastAttemptLog = now;
@@ -544,6 +545,10 @@ import { Resampler } from './modem/resample.js';
       }
       return;
     }
+    // Wait for the burst to finish. Grabbing the window while a transmission is
+    // still arriving finds the frame start perfectly and then runs off the end
+    // of the recording — which is what most of the early failures were.
+    if (quietFor < 300) return;
 
     const ordered = new Float64Array(ringFilled);
     const start = ringFilled === ring.length ? ringAt : 0;
